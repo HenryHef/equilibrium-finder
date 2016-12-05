@@ -101,7 +101,7 @@ def shiftMap(equilibriumEquation,molarityMap,N,maxSerchRounds=1000):
 
     #print "at end of round, M="+str(molarityMap)
 
-def checkEQ(equilibriumEquationList,molarityMap):
+def checkEQ(equilibriumEquationList,molarityMap,debug=False):
     rMax=1.0
     for equation in equilibriumEquationList:
         Qr=Q(equation,molarityMap)
@@ -109,9 +109,11 @@ def checkEQ(equilibriumEquationList,molarityMap):
         if r<1:
             r=1.0/r
         rMax=max(rMax,r)
+        if(debug):
+            print "error on "+str(equation)+" is "+str((rMax-1.0)*100.0)
     print "max error Q from Keq = "+str((rMax-1.0)*100.0)+"%"
 
-def findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRounds=1000,maxSerchRounds=1000,debug=False):
+def findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRounds=1000,maxSerchRounds=1000,debug=False,pr=False):
     molarityMap = {}
     for key in initialMolarityMap:
         molarityMap[key]=initialMolarityMap[key]
@@ -124,7 +126,7 @@ def findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRoun
         if(debug):print "ROUND: "+str(i)+"\t"+str(molarityMap)
         #first check no change
         if all(oldMolarityMap[key]==molarityMap[key] for key in initialMolarityMap):
-            break
+            return molarityMap
         #else do another round
         for key in initialMolarityMap:
             oldMolarityMap[key]=molarityMap[key]
@@ -133,6 +135,7 @@ def findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRoun
         #update rConstants
         for equation in equilibriumEquationList: #in the form ((reactants),(products),Keq)
             shiftMap(equation,molarityMap,N,maxSerchRounds)
+    print "Equilibrium not reached"
     return molarityMap
 
 def makeEquation(reactants,products,Keq):
@@ -217,26 +220,92 @@ def genCombEqs(es):
     re = removeDoubles(re)
     return re
 
-def findEquilibrium(equilibriumEquationList,initialMolarityMap,maxApplyRounds=1000,maxSerchRounds=1000,debug=False):
+def findEquilibrium(equilibriumEquationList,initialMolarityMap,HplusName="H+",maxApplyRounds=1000,maxSerchRounds=1000,debug=False,pr=False):
     fillInitListWithMissing0(initialMolarityMap,equilibriumEquationList)
     extraEquations=genCombEqs(equilibriumEquationList)
     equilibriumEquationList.extend(extraEquations)
-    mMap=findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRounds,maxSerchRounds,debug)
-    print "\n\n"
-    print mMap
-    print "ph="+str(-np.log10(mMap["H+"]))
-    checkEQ(equilibriumEquationList,mMap)
+    mMap=findEquilibriumFinal(equilibriumEquationList,initialMolarityMap,maxApplyRounds,maxSerchRounds,debug,pr)
+    if(pr):
+        print "\n\n"
+        print mMap
+        print "ph="+str(-np.log10(mMap[HplusName]))
+        checkEQ(equilibriumEquationList,mMap)
+    return mMap
 
-#TODO add text equation parser
 
+def coef_subst(s):
+    numbers="0123456789"
+    i = -1
+    while s[i+1] in numbers:
+        i=i+1
+    if(i==-1):
+        return [1,s]
+    else:
+        return [int(s[0:i+1]),s[i+1:]]
 
-e1=makeEquation([],[("H+",1),("OH-",1)],1E-14)
-e2=makeEquation([("HC3H5O2",1)],[("C3H5O2-",1),("H+",1)],1.3E-5)
-e3=makeEquation([("KOH",1)],[("K+",1),("OH-",1)],1E30)
-equilibriumEquationList=[e1,e2,e3]
-#add step that combines oposit equations with overlaping parts, i.e. weak acid weak base slow convertion.
+def parseTextEquation(s):
+    #form of text equation C1 + C2 + C3 ... (<)-->( )C4( )+( )C5( )+( )C6##Keq
+    #white space is irrelivant
+    #C1 of the form String(\(?\))
+    rT=""
+    pT=""
+    Keq=0
+    if "##" in s:
+        parts=s.split("##")
+        subparts=parts[0].replace("<","").split("-->")
+        Keq=float(parts[1]) 
+        rT=subparts[0]
+        pT=subparts[1]
+    else:
+        parts=s.replace("<","").split("-->")
+        Keq=1E50
+        rT=parts[0]
+        pT=parts[1]
+    rL=rT.split(" + ")
+    pL=pT.split(" + ")
+    reacs=[]
+    prods=[]
+    for r in rL:
+        r=r.replace(" ","")
+        coef,subst=coef_subst(r)
+        if not ("(l)" in subst) or ("(s)" in subst):
+            reacs.append((subst,coef))
+    for p in pL:
+        p=p.replace(" ","")
+        coef,subst=coef_subst(p)
+        if not ("(l)" in subst) or ("(s)" in subst):
+            prods.append((subst,coef))
+    eq=makeEquation(reacs,prods,Keq)
+    return eq
 
-initialMolarityMap={"H+":1,"OH-":1,"HC3H5O2":1,"C3H5O2-":0,"KOH":1}
-findEquilibrium(equilibriumEquationList,initialMolarityMap)
+def parseTextEquations(s):
+    strsN=s.split("\n")
+    strs=[]
+    for st in strsN:
+        strs.extend(st.split(";"))
+    eqs=[]
+    for s in strs:
+        e=parseTextEquation(s)
+        eqs.append(e)
+    return eqs
 
+Acid="HC3H5O2"
+Base="KOH"
+
+Ma=.1
+Va=.025
+Mb=.1
+Vb=0
+stepSizeB=.001
+
+for i in range(100):
+    equilibriumEquationList=parseTextEquations("H2O(l)<-->H+ + OH- ##1E-14\n\
+        HC3H5O2<-->C3H5O2- + H+ ##1.3E-5\n\
+        KOH<-->K+ + OH- ##1E50")
+    Vb=Vb+stepSizeB
+    V=Va+Vb
+    initialMolarityMap={Acid:Ma*Va/V,Base:Mb*Vb/V}
+    mMap = findEquilibrium(equilibriumEquationList,initialMolarityMap,"H+",1000,1000,False,False)
+    pH=-np.log10(mMap["H+"])
+    print str(i*stepSizeB)+"\t"+str(pH)
 
